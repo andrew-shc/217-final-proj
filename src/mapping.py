@@ -6,7 +6,7 @@ class LocalMapping:
     def __init__(self):
         self.covisibility_graph = CovisibilityGraph()
 
-    def map_initialization(self):
+    def map_initialization(self, kf1: Keyframe, kf2: Keyframe):
         pass
 
     def insert_keyframe(self, kf: Keyframe):
