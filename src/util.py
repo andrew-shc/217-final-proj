@@ -5,13 +5,25 @@ import cv2
 
 @dataclass
 class Keyframe:
-    T: np.ndarray  # world to camera
-    K: np.ndarray  # intrinsics
+    T: np.ndarray  # world to camera (where the world is defined by the first frame)
+    K: np.ndarray  # intrinsics 3x3
     # ORB keypoints + descriptors
     kp: list[cv2.KeyPoint]
     des: np.ndarray
     is_map_points: np.ndarray  # masking array
     map_points_idx: np.ndarray  # corresponding index to the map point
+
+    @property
+    def c(self):
+        return self.K[[0,1],[2,2]]
+    
+    @property
+    def f(self):
+        return self.K[[0,1],[0,1]]
+    
+    @property
+    def p(self):
+        return np.array([i.pt for i in self.kp], dtype=np.float32)
 
 
 @dataclass
