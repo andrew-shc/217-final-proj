@@ -1,3 +1,4 @@
+from typing import Callable
 import cv2
 import numpy as np
 
@@ -15,43 +16,64 @@ class MapInitializer:
         4. do various tests (i.e., chirality, reprojection error) to select final triangulated points or pass
         5. bundle adjustment to refine initial reconstruction
         """
-        N = kp1.shape[0]
 
         # H = self.compute_homography(kp1, kp2)
         # print(H)
 
-        best_score = 0
-        best_H = None
+        best_H_score, best_H = self.compute_model(kp1, kp2, model="homography")
+        best_F_score, best_F = self.compute_model(kp1, kp2, model="fundamental")
+        
+        print(best_H_score, best_H)
+        print(best_F_score, best_F)
 
-        ITERS = 10000
+    def compute_model(self, kp1: np.ndarray, kp2: np.ndarray, model: str):
+        """
+        The RANSAC scheme part
+        """
+        N = kp1.shape[0]
+        print(f"============ Computing model {model}")
+
+        best_M_score = -1
+        best_M = None
+
+        ITERS = 1_000
         for _ in range(ITERS):
-            sample_indices = np.random.choice(N, 8, replace=False)
+            sample_indices = np.random.choice(N, 4 if model == "homography" else 8, replace=False)
             p1_sample = self.__homogenize_points(kp1[sample_indices])
             p2_sample = self.__homogenize_points(kp2[sample_indices])
-            H = self.compute_homography(p1_sample, p2_sample)
-            S_H = self.compute_score(p1_sample, p2_sample, H, "homography")
-
-            if S_H > best_score:
-                print(S_H)
-                best_score = S_H
-                best_H = H
+            if model == "homography":
+                M = self.compute_homography(p1_sample, p2_sample)
+            elif model == "fundamental":
+                M = self.compute_fundamental(p1_sample, p2_sample)
+            else:
+                raise TypeError(f"Invalid model to compute model: {model}")
         
-        print(best_H)
+            try:
+                S_M = self.compute_score(p1_sample, p2_sample, M, model=model)
+            except np.linalg.LinAlgError:
+                continue  # error from attempting to invert singular matrix
 
+            if S_M > best_M_score:
+                print(S_M)
+                best_M_score = S_M
+                best_M = M
         
+        return best_M_score, best_M
 
-    def compute_score(self, p1: np.ndarray, p2: np.ndarray, T: np.ndarray, M: str):
-        S_M = 0
-
-        if M == "homography":
-            pass
-        elif M == "fundamental":
-            pass
+    def compute_score(self, p1: np.ndarray, p2: np.ndarray, M: np.ndarray, model: str):
+        T_H = 5.99
+        T_F = 3.84
+        GAMMA = T_H  # invariant to model type (b/c they want the score to be homogenous for inlier region)
+        if model == "homography":
+            T_M = T_H
+        elif model == "fundamental":
+            T_M = T_F
         else:
-            raise TypeError(f"Invalid model to compute score: {M}")
-        T_inv = np.linalg.inv(T)
+            raise TypeError(f"Invalid model to compute score: {model}")
 
-        x2_proj = (T @ p1.T).T
+        T_inv = np.linalg.inv(M)
+
+        x2_proj = (M @ p1.T).T
         x1_proj = (T_inv @ p2.T).T
 
         x2_proj /= x2_proj[:, 2][:, None]
@@ -59,14 +81,14 @@ class MapInitializer:
 
         err1 = np.sum((x1_proj[:, :2] - p1[:, :2]) ** 2, axis=1)
         err2 = np.sum((x2_proj[:, :2] - p2[:, :2]) ** 2, axis=1)
-        rho = lambda d2: np.where(d2<5.99, 5.99-d2, np.zeros_like(d2))
+        rho = lambda d2: np.where(d2<T_M, T_M-d2, np.zeros_like(d2))
 
         S_M = np.sum(rho(err1)+rho(err2))
         return S_M
 
     def compute_homography(self, p1: np.ndarray, p2: np.ndarray):
         """
-        via normalized DLT
+        via normalized DLT + SVD
         """
         # p1 = self.__homogenize_points(p1)
         p1, T1 = self.__normalize_points(p1)
@@ -83,17 +105,33 @@ class MapInitializer:
         h = Vt[-1]
         H_hat = h.reshape(3,3)
         H = np.linalg.inv(T2) @ H_hat @ T1
-        H = H / H[2,2]
-
-        return H
-
-        
+        return H / H[2,2]
 
     def compute_fundamental(self, p1: np.ndarray, p2: np.ndarray):
         """
-        via 8-point algorithm
+        via 8-point algorithm + SVD
         """
-        pass
+        p1, T1 = self.__normalize_points(p1)
+        p2, T2 = self.__normalize_points(p2)
+
+        A = np.array([
+            [x2[0]*x1[0], x2[0]*x1[1], x2[0],
+             x2[1]*x1[0], x2[1]*x1[1], x2[1],
+                   x1[0],       x1[1],    1 ]
+            for x1, x2 in zip(p1, p2)
+        ])
+
+        # solve for F
+        _, _, Vt = np.linalg.svd(A)
+        F_hat = Vt[-1].reshape(3, 3)
+
+        # enforce rank-2 constraint (b/c F is rank-2 by skew-symmetric t)
+        U, S, Vt = np.linalg.svd(F_hat)
+        S[-1] = 0
+        F_hat = U @ np.diag(S) @ Vt
+
+        F = T2.T @ F_hat @ T1
+        return F / F[2,2]
 
     def full_bundle_adjustment(self):
         pass
