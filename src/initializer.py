@@ -17,25 +17,60 @@ class MapInitializer:
         """
         N = kp1.shape[0]
 
-        H = self.compute_homography(kp1, kp2)
-        print(H)
+        # H = self.compute_homography(kp1, kp2)
+        # print(H)
 
-        ITERS = 1000
+        best_score = 0
+        best_H = None
+
+        ITERS = 10000
         for _ in range(ITERS):
             sample_indices = np.random.choice(N, 8, replace=False)
-            p1_sample = kp1[:, sample_indices]
-            p2_sample = kp2[:, sample_indices]
+            p1_sample = self.__homogenize_points(kp1[sample_indices])
+            p2_sample = self.__homogenize_points(kp2[sample_indices])
+            H = self.compute_homography(p1_sample, p2_sample)
+            S_H = self.compute_score(p1_sample, p2_sample, H, "homography")
+
+            if S_H > best_score:
+                print(S_H)
+                best_score = S_H
+                best_H = H
+        
+        print(best_H)
+
         
 
+    def compute_score(self, p1: np.ndarray, p2: np.ndarray, T: np.ndarray, M: str):
+        S_M = 0
 
+        if M == "homography":
+            pass
+        elif M == "fundamental":
+            pass
+        else:
+            raise TypeError(f"Invalid model to compute score: {M}")
+        T_inv = np.linalg.inv(T)
+
+        x2_proj = (T @ p1.T).T
+        x1_proj = (T_inv @ p2.T).T
+
+        x2_proj /= x2_proj[:, 2][:, None]
+        x1_proj /= x1_proj[:, 2][:, None]
+
+        err1 = np.sum((x1_proj[:, :2] - p1[:, :2]) ** 2, axis=1)
+        err2 = np.sum((x2_proj[:, :2] - p2[:, :2]) ** 2, axis=1)
+        rho = lambda d2: np.where(d2<5.99, 5.99-d2, np.zeros_like(d2))
+
+        S_M = np.sum(rho(err1)+rho(err2))
+        return S_M
 
     def compute_homography(self, p1: np.ndarray, p2: np.ndarray):
         """
         via normalized DLT
         """
-        p1 = self.__homogenize_points(p1)
+        # p1 = self.__homogenize_points(p1)
         p1, T1 = self.__normalize_points(p1)
-        p2 = self.__homogenize_points(p2)
+        # p2 = self.__homogenize_points(p2)
         p2, T2 = self.__normalize_points(p2)
 
         A = []
