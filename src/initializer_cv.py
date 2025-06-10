@@ -10,6 +10,7 @@ boring math, especially testing motion hypothesis.
 class MapInitializerCv:
     T_H = 5.99
     T_F = 3.84
+    GAMMA = T_H
 
     def __init__(self, K: np.ndarray):
         self.K = K
@@ -28,6 +29,7 @@ class MapInitializerCv:
 
         # heuristic
         R_H = S_H/(S_H+S_F)
+        print(R_H)
         if R_H > 0.45:
             # use homography
 
@@ -78,38 +80,51 @@ class MapInitializerCv:
             return
         
 
-    def compute_H_score(self, p1: np.ndarray, p2: np.ndarray, H: np.ndarray):
-        T_inv = np.linalg.inv(H)
+    def compute_H_score(self, x1: np.ndarray, x2: np.ndarray, H: np.ndarray):
+        H_inv = np.linalg.inv(H)
 
-        x2_proj = (H @ p1.T).T
-        x1_proj = (T_inv @ p2.T).T
+        # Project pts1 to image 2 and vice versa
+        x1_to_2 = (H @ x1.T).T
+        x2_to_1 = (H_inv @ x2.T).T
 
-        x2_proj /= x2_proj[:, 2][:, None]
-        x1_proj /= x1_proj[:, 2][:, None]
+        # Normalize homogeneous coordinates
+        x1_to_2 /= x1_to_2[:, 2:3]
+        x2_to_1 /= x2_to_1[:, 2:3]
 
-        err1 = np.sum((x1_proj[:, :2] - p1[:, :2]) ** 2, axis=1)
-        err2 = np.sum((x2_proj[:, :2] - p2[:, :2]) ** 2, axis=1)
-        rho = lambda d2: np.where(d2<self.T_H, self.T_H-d2, np.zeros_like(d2))
+        # Compute squared distances
+        d1 = np.sum((x2[:, :2] - x1_to_2[:, :2]) ** 2, axis=1)
+        d2 = np.sum((x1[:, :2] - x2_to_1[:, :2]) ** 2, axis=1)
 
-        S_H = np.sum(rho(err1)+rho(err2))
+        score = self.rho(d1,T_M=self.T_H) + self.rho(d2,T_M=self.T_H)
+        S_H = np.sum(score)
 
         return S_H
     
     def compute_F_score(self, p1: np.ndarray, p2: np.ndarray, F: np.ndarray):
-        Fx1 = F @ p1.T
-        Ftx2 = F.T @ p2.T
-        x2tFx1 = np.sum(p2 * (F @ p1.T).T, axis=1)
 
-        denom = Fx1[0]**2 + Fx1[1]**2 + Ftx2[0]**2 + Ftx2[1]**2
-        d = x2tFx1**2 / denom
+        # Epipolar lines
+        l2 = (F @ p1.T).T  # (N, 3) lines in image 2
+        l1 = (F.T @ p2.T).T  # (N, 3) lines in image 1
 
-        inliers = d < self.T_F
-        S_F = np.sum(self.T_F - d[inliers])
+        # Point-line distances squared
+        d1 = np.sum(p2*l2, axis=1)**2 / (l2[:, 0]**2 + l2[:, 1]**2)
+        d2 = np.sum(p1*l1, axis=1)**2 / (l1[:, 0]**2 + l1[:, 1]**2)
+
+        score = self.rho(d1,T_M=self.T_F) + self.rho(d2,T_M=self.T_F)
+        S_F = np.sum(score)
 
         return S_F
 
+    def rho(self, d2: np.ndarray, T_M: float):
+        """
+        d2: symmetric transfer error
+        """
+        return np.where(d2 < T_M, self.GAMMA-d2, np.zeros_like(d2))
+
     def __homogenize_points(self, p: np.ndarray):
         return np.stack([p[:,0],p[:,1],np.ones_like(p[:,0])], axis=1)
+
+
 
 def match_sift_keypoints_and_save_vis(
     image_path1,
