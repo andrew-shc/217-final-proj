@@ -13,13 +13,13 @@ class SimplifiedMapInitializerCv:
     def __init__(self, K: np.ndarray):
         self.K = K
 
-    def initialize(
-            self, kp1: np.ndarray, kp2: np.ndarray
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def estimate_initial_pose(
+            self, kp1: np.ndarray, kp2: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Assumes kp1[i] (Nx2) corresponds to kp2[i] (Nx2) for all i
+        Estimates the initial R,t pose of the 2nd frame.
 
-        returns: R,t,M
+        Returns R,t,H
         """
         N = kp1.shape[0]
 
@@ -32,7 +32,7 @@ class SimplifiedMapInitializerCv:
         # pain in an ass to implement it, hence we're skipping it
 
         # opencv uses a variation that only has at most 4 hypothesis
-        _, Rs, ts, Ns = cv2.decomposeHomographyMat(H, self.K)
+        _, Rs, ts, _ = cv2.decomposeHomographyMat(H, self.K)
 
         best_idx = -1
         max_valid = -1
@@ -61,53 +61,22 @@ class SimplifiedMapInitializerCv:
         
         R = Rs[best_idx]
         t = ts[best_idx]
-        M = H
 
-        # given R,t  triangulate the points
+        return R,t,H
 
-        # >> insert triangulation code
-        print(R.shape, t.shape)
-        # pts_3d = np.array([[0.0,0.0,0.0]])
-        pts_3d = self.triangulate(p1.T, np.eye(3,3), np.zeros((3,1)), p2.T, R, t)
-
-        return (R, t, M, pts_3d)
-        
-    def triangulate(self,pts2L,RL,tL,pts2R,RR,tR):
+    def triangulate_initial_point_cloud(
+            self, kp1: np.ndarray, kp2: np.ndarray, R: np.ndarray, t: np.ndarray
+    ) -> np.ndarray:
         """
-        Triangulate the set of points seen at location pts2L / pts2R in the
-        corresponding pair of cameras. Return the 3D coordinates relative
-        to this global coordinate system
-
-
-        Parameters
-        ----------
-        points are homogenous
-
-        pts2L : 2D numpy.array (dtype=float)
-            Coordinates of N points stored in a array of shape (2,N) seen from camL camera
-
-        pts2R : 2D numpy.array (dtype=float)
-            Coordinates of N points stored in a array of shape (2,N) seen from camR camera
-
-        camL : Camera
-            The first "left" camera view
-
-        camR : Camera
-            The second "right" camera view
-
-        Returns
-        -------
-        pts3 : 2D numpy.array (dtype=float)
-            array containing 3D coordinates of the points in global coordinates
-
+        Estimates the initial point cloud via the given pose and keypoints.
+        
+        Return 3D points (Nx3).
         """
 
-        #
-        #  your code goes here
-        #
-        #
+        pts2L = self.__homogenize_points(kp1)
+        pts2R = self.__homogenize_points(kp2)
+        RL, tL, RR, tR = np.eye(3,3), np.zeros((3,1)), R, t
 
-        
         N = pts2L.shape[1]
         pts3 = np.zeros((3, N))
         
@@ -154,9 +123,8 @@ class SimplifiedMapInitializerCv:
 
 
 def match_sift_keypoints_and_save_vis(
-    image_path1,
-    image_path2,
-    save_path,
+    img1,
+    img2,
     ratio_thresh=0.75
 ):
     """
@@ -174,8 +142,6 @@ def match_sift_keypoints_and_save_vis(
         kp1_pts (np.ndarray): Array of shape (N, 2) of matched keypoints from image 1.
         kp2_pts (np.ndarray): Array of shape (N, 2) of matched keypoints from image 2.
     """
-    img1 = cv2.imread(image_path1, cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(image_path2, cv2.IMREAD_GRAYSCALE)
 
     sift = cv2.SIFT_create()
     kp1, des1 = sift.detectAndCompute(img1, None)
@@ -193,7 +159,7 @@ def match_sift_keypoints_and_save_vis(
     kp1_pts = np.array([kp1[m.queryIdx].pt for m in good_matches], dtype=np.float32)
     kp2_pts = np.array([kp2[m.trainIdx].pt for m in good_matches], dtype=np.float32)
 
-    # # Create a visualization image
+    # Create a visualization image
     vis_image = cv2.drawMatches(
         img1, kp1,
         img2, kp2,
@@ -252,43 +218,9 @@ def stitch_images(img1, img2, H):
 
     return stitched
 
-if __name__ == "__main__":
-    kp1, kp2 = match_sift_keypoints_and_save_vis(
-        "/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636750863555584.png",
-        "/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636751663555584.png",
-        "output.jpg"
-    )
-    # print(kp1.shape, kp2.shape)
-
-    img1 = cv2.imread("/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636579763555584.png", cv2.IMREAD_GRAYSCALE)
-    H, W = img1.shape
-    # print(img1.shape)
-    
-
-    map = SimplifiedMapInitializerCv(
-        # TODO: might want to find the actualy fx fy values
-        K=np.array([
-            [3024,  0.0, W/2],
-            [ 0.0, 3024, H/2],
-            [ 0.0,  0.0, 1.0],
-        ])
-    )
-    (R,t,M,pts_3d) = map.initialize(kp1, kp2)
-    # assuming M is H
-
-    img1 = cv2.imread('/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636750863555584.png')
-    img2 = cv2.imread('/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636751663555584.png')
-
-    # Assume H is known: from img1 to img2
-    stitched = stitch_images(img1, img2, M)
-
-    cv2.imwrite("H_stitched.png", stitched)
-
+def visualize_point_cloud(pts_3d):
     pts_3d = pts_3d.T
     x, y, z = pts_3d[:,0], pts_3d[:,1], pts_3d[:,2]
-    cam1 = np.zeros(3)
-    t /= np.linalg.norm(t)
-    cam2 = (-R.T @ t).flatten()
 
     fig = go.Figure()
 
@@ -298,34 +230,6 @@ if __name__ == "__main__":
         mode='markers',
         marker=dict(size=2, color='blue'),
         name='Triangulated Points'
-    ))
-
-    fig.add_trace(go.Scatter3d(
-        x=[cam1[0]], y=[cam1[1]], z=[cam1[2]],
-        mode='markers+text',
-        marker=dict(size=6, color='red'),
-        text=['Camera 1'],
-        textposition='top center',
-        name='Camera 1'
-    ))
-
-    fig.add_trace(go.Scatter3d(
-        x=[cam2[0]], y=[cam2[1]], z=[cam2[2]],
-        mode='markers+text',
-        marker=dict(size=6, color='green'),
-        text=['Camera 2'],
-        textposition='top center',
-        name='Camera 2'
-    ))
-
-    # Baseline line
-    fig.add_trace(go.Scatter3d(
-        x=[cam1[0], cam2[0]],
-        y=[cam1[1], cam2[1]],
-        z=[cam1[2], cam2[2]],
-        mode='lines',
-        line=dict(color='black', width=2, dash='dash'),
-        name='Baseline'
     ))
     
     fig.update_layout(
@@ -341,4 +245,79 @@ if __name__ == "__main__":
 
     fig.show()
 
+def main():
+    ########################################################################################
+    ###    Synthetic data generation
+    ########################################################################################
+    H, W = 1080, 1920
 
+    synth_kp1, synth_kp2 = None, None
+
+    K=np.array([
+        [3024,  0.0, W/2],
+        [ 0.0, 3024, H/2],
+        [ 0.0,  0.0, 1.0],
+    ])
+    mapper = SimplifiedMapInitializerCv(K=K)
+
+
+    ########################################################################################
+    ###    Finding homography & estimating initial pose
+    ########################################################################################
+
+    (R,t,H) = mapper.estimate_initial_pose(synth_kp1, synth_kp2)
+
+    
+    ########################################################################################
+    ###    Initial point triangulation
+    ########################################################################################
+
+    pts_3d = mapper.triangulate_initial_point_cloud(synth_kp1, synth_kp2, R, t)
+
+    
+
+
+    ########################################################################################
+    ###    Real data
+    ########################################################################################
+
+
+    img1 = cv2.imread("/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636750863555584.png", cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread("/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636751663555584.png", cv2.IMREAD_GRAYSCALE)
+
+    kp1, kp2 = match_sift_keypoints_and_save_vis(img1, img2)
+
+    # TODO: might want to find the actually fx fy values
+    H, W = img1.shape
+    K=np.array([
+        [3024,  0.0, W/2],
+        [ 0.0, 3024, H/2],
+        [ 0.0,  0.0, 1.0],
+    ])
+
+    mapper = SimplifiedMapInitializerCv(K=K)
+
+
+    ########################################################################################
+    ###    Finding homography & estimating initial pose
+    ########################################################################################
+
+    (R,t,H) = mapper.estimate_initial_pose(kp1, kp2)
+
+    # visualize image stitching on real data
+    stitched = stitch_images(img1, img2, H)
+    cv2.imwrite("H_stitched.png", stitched)
+
+    
+    ########################################################################################
+    ###    Initial point triangulation
+    ########################################################################################
+
+    pts_3d = mapper.triangulate_initial_point_cloud(kp1, kp2, R, t)
+    # visualize triangulated 3D points on real data
+    visualize_point_cloud(pts_3d)
+
+
+if __name__ == "__main__":
+    main()
+    
