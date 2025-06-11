@@ -106,9 +106,3 @@ class LocalMapping:
             pts3[:, i] = P
         
         return pts3
-
-
-class CovisibilityGraph:
-    def __init__(self):
-        pass
-
