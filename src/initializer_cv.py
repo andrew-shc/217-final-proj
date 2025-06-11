@@ -1,5 +1,8 @@
 import numpy as np
 import cv2
+import plotly.graph_objects as go
+
+
 
 """
 This is the more complete OpenCV version of the initializer, which abstracts a lot of the
@@ -15,9 +18,13 @@ class MapInitializerCv:
     def __init__(self, K: np.ndarray):
         self.K = K
 
-    def initialize(self, kp1: np.ndarray, kp2: np.ndarray):
+    def initialize(
+            self, kp1: np.ndarray, kp2: np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Assumes kp1[i] (Nx2) corresponds to kp2[i] (Nx2) for all i
+
+        returns: R,t,M
         """
         H, H_inlier_mask = cv2.findHomography(kp1, kp2, method=cv2.RANSAC)
         F, F_inlier_mask = cv2.findFundamentalMat(kp1, kp2, method=cv2.FM_8POINT)
@@ -38,7 +45,6 @@ class MapInitializerCv:
 
             # opencv uses a variation that only has at most 4 hypothesis
             _, Rs, ts, Ns = cv2.decomposeHomographyMat(H, self.K)
-
 
             best_idx = -1
             max_valid = -1
@@ -65,19 +71,25 @@ class MapInitializerCv:
                     max_valid = count
                     best_idx = i
             
-            R_best = Rs[best_idx]
-            t_best = ts[best_idx]
-
-            return
+            R = Rs[best_idx]
+            t = ts[best_idx]
+            M = H
         else:
             # use fundamental
 
             E = self.K.T @ F @ self.K
 
             # Step 2: Recover relative pose (R, t)
-            p3d, R, t, P_inlier_mask = cv2.recoverPose(E, kp1, kp2, self.K)
+            _, R, t, P_inlier_mask = cv2.recoverPose(E, kp1, kp2, self.K)
 
-            return
+            M = F
+
+        # given R,t  triangulate the points
+
+        # >> insert triangulation code
+        pts_3d = np.array([[0.0,0.0,0.0]])
+
+        return (R, t, M, pts_3d)
         
 
     def compute_H_score(self, x1: np.ndarray, x2: np.ndarray, H: np.ndarray):
@@ -123,6 +135,8 @@ class MapInitializerCv:
 
     def __homogenize_points(self, p: np.ndarray):
         return np.stack([p[:,0],p[:,1],np.ones_like(p[:,0])], axis=1)
+
+
 
 
 
@@ -186,6 +200,44 @@ def match_sift_keypoints_and_save_vis(
 
     return kp1_pts, kp2_pts
 
+def stitch_images(img1, img2, H):
+    """
+    Stitches img1 onto img2 using the homography H (from img1 to img2).
+
+    Args:
+        img1: First image (to warp)
+        img2: Second image (reference)
+        H: 3x3 homography from img1 to img2
+
+    Returns:
+        stitched: New stitched image (img1 warped onto img2)
+    """
+    # Get image shapes
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+
+    # Get the corners of img1
+    corners_img1 = np.float32([[0, 0], [w1, 0], [w1, h1], [0, h1]]).reshape(-1, 1, 2)
+    # Warp the corners to img2 space
+    warped_corners = cv2.perspectiveTransform(corners_img1, H).squeeze(1)
+
+    # Combine all corners to get bounding box
+    all_corners = np.vstack((warped_corners, [[0, 0]], [[w2, 0]], [[w2, h2]], [[0, h2]])).reshape(-1, 2)
+    [xmin, ymin] = np.floor(np.min(all_corners, axis=0)).astype(int)
+    [xmax, ymax] = np.ceil(np.max(all_corners, axis=0)).astype(int)
+
+    # Translation offset (if warped image goes negative)
+    offset = [-xmin, -ymin]
+    translation = np.array([[1, 0, offset[0]], [0, 1, offset[1]], [0, 0, 1]])
+
+    # Warp img1
+    output_size = (xmax - xmin, ymax - ymin)
+    stitched = cv2.warpPerspective(img1, translation @ H, output_size)
+
+    # Paste img2 into result
+    stitched[offset[1]:offset[1]+h2, offset[0]:offset[0]+w2] = img2
+
+    return stitched
 
 if __name__ == "__main__":
     kp1, kp2 = match_sift_keypoints_and_save_vis(
@@ -208,4 +260,72 @@ if __name__ == "__main__":
             [ 0.0,  0.0, 1.0],
         ])
     )
-    map.initialize(kp1, kp2)
+    (R,t,M,pts_3d) = map.initialize(kp1, kp2)
+    # assuming M is H
+
+    img1 = cv2.imread('/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636750863555584.png')
+    img2 = cv2.imread('/home/andrewhc/Datasets/MH01/mav0/cam0/data/1403636751663555584.png')
+
+    # Assume H is known: from img1 to img2
+    stitched = stitch_images(img1, img2, M)
+
+    cv2.imwrite("H_stitched.png", stitched)
+
+
+    x, y, z = pts_3d[:,0], pts_3d[:,1], pts_3d[:,2]
+    cam1 = np.zeros(3)
+    t /= np.linalg.norm(t)
+    cam2 = (-R.T @ t).flatten()
+
+    fig = go.Figure()
+
+    # Plot 3D points
+    fig.add_trace(go.Scatter3d(
+        x=x, y=y, z=z,
+        mode='markers',
+        marker=dict(size=2, color='blue'),
+        name='Triangulated Points'
+    ))
+
+    fig.add_trace(go.Scatter3d(
+        x=[cam1[0]], y=[cam1[1]], z=[cam1[2]],
+        mode='markers+text',
+        marker=dict(size=6, color='red'),
+        text=['Camera 1'],
+        textposition='top center',
+        name='Camera 1'
+    ))
+
+    fig.add_trace(go.Scatter3d(
+        x=[cam2[0]], y=[cam2[1]], z=[cam2[2]],
+        mode='markers+text',
+        marker=dict(size=6, color='green'),
+        text=['Camera 2'],
+        textposition='top center',
+        name='Camera 2'
+    ))
+
+    # Baseline line
+    fig.add_trace(go.Scatter3d(
+        x=[cam1[0], cam2[0]],
+        y=[cam1[1], cam2[1]],
+        z=[cam1[2], cam2[2]],
+        mode='lines',
+        line=dict(color='black', width=2, dash='dash'),
+        name='Baseline'
+    ))
+    
+    fig.update_layout(
+        title='Triangulated Points (3xN Format)',
+        scene=dict(
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z',
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=30)
+    )
+
+    fig.show()
+
+
