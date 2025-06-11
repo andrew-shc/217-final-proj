@@ -5,16 +5,11 @@ import plotly.graph_objects as go
 
 
 """
-This is the more complete OpenCV version of the initializer, which abstracts a lot of the
-boring math, especially testing motion hypothesis.
+This is the simplified version from the initializer_cv.py after listing out additional assumptions (notably, omit F).
 """
 
 
-class MapInitializerCv:
-    T_H = 5.99
-    T_F = 3.84
-    GAMMA = T_H
-
+class SimplifiedMapInitializerCv:
     def __init__(self, K: np.ndarray):
         self.K = K
 
@@ -29,62 +24,44 @@ class MapInitializerCv:
         N = kp1.shape[0]
 
         H, _H_inlier_mask = cv2.findHomography(kp1, kp2, method=cv2.RANSAC)
-        F, _F_inlier_mask = cv2.findFundamentalMat(kp1, kp2, method=cv2.FM_8POINT)
         p1, p2 = self.__homogenize_points(kp1), self.__homogenize_points(kp2)
-        S_H, H_inlier_mask = self.compute_H_score(p1, p2, H)
-        S_F, F_inlier_mask = self.compute_F_score(p1, p2, F)
 
-        print("S_H:", S_H, "S_F:", S_F)
+        # use homography
 
-        # heuristic
-        R_H = S_H/(S_H+S_F)
-        print(R_H)
-        if R_H > 0.45:
-            # use homography
+        # motion hypothesis from H (from pg.8): https://inria.hal.science/inria-00075698/PDF/RR-0856.pdf 
+        # pain in an ass to implement it, hence we're skipping it
 
-            # motion hypothesis from H (from pg.8): https://inria.hal.science/inria-00075698/PDF/RR-0856.pdf 
-            # pain in an ass to implement it, hence we're skipping it
+        # opencv uses a variation that only has at most 4 hypothesis
+        _, Rs, ts, Ns = cv2.decomposeHomographyMat(H, self.K)
 
-            # opencv uses a variation that only has at most 4 hypothesis
-            _, Rs, ts, Ns = cv2.decomposeHomographyMat(H, self.K)
+        best_idx = -1
+        max_valid = -1
 
-            best_idx = -1
-            max_valid = -1
+        for i in range(len(Rs)):
+            R = Rs[i]
+            t = ts[i].reshape(3, 1)
 
-            for i in range(len(Rs)):
-                R = Rs[i]
-                t = ts[i].reshape(3, 1)
+            P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+            P2 = self.K @ np.hstack((R, t))
 
-                P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-                P2 = self.K @ np.hstack((R, t))
+            pts4d_hom = cv2.triangulatePoints(P1, P2, kp1.T, kp2.T)
+            pts4d = pts4d_hom[:3] / pts4d_hom[3]
 
-                pts4d_hom = cv2.triangulatePoints(P1, P2, kp1.T, kp2.T)
-                pts4d = pts4d_hom[:3] / pts4d_hom[3]
+            depth1 = pts4d[2]
+            depth2 = (R[2] @ pts4d + t[2])
 
-                depth1 = pts4d[2]
-                depth2 = (R[2] @ pts4d + t[2])
+            valid = (depth1 > 0) & (depth2 > 0)
+            count = np.count_nonzero(valid)
 
-                valid = (depth1 > 0) & (depth2 > 0)
-                count = np.count_nonzero(valid)
-
-                # print(1)
-                if count > max_valid:
-                    # print("===", count, kp1.shape[0])
-                    max_valid = count
-                    best_idx = i
-            
-            R = Rs[best_idx]
-            t = ts[best_idx]
-            M = H
-        else:
-            # use fundamental
-
-            E = self.K.T @ F @ self.K
-
-            # Step 2: Recover relative pose (R, t)
-            _, R, t, P_inlier_mask = cv2.recoverPose(E, kp1, kp2, self.K)
-
-            M = F
+            # print(1)
+            if count > max_valid:
+                # print("===", count, kp1.shape[0])
+                max_valid = count
+                best_idx = i
+        
+        R = Rs[best_idx]
+        t = ts[best_idx]
+        M = H
 
         # given R,t  triangulate the points
 
@@ -168,50 +145,6 @@ class MapInitializerCv:
         
         return pts3
 
-    def compute_H_score(self, x1: np.ndarray, x2: np.ndarray, H: np.ndarray):
-        H_inv = np.linalg.inv(H)
-
-        # Project pts1 to image 2 and vice versa
-        x1_to_2 = (H @ x1.T).T
-        x2_to_1 = (H_inv @ x2.T).T
-
-        # Normalize homogeneous coordinates
-        x1_to_2 /= x1_to_2[:, 2:3]
-        x2_to_1 /= x2_to_1[:, 2:3]
-
-        # Compute squared distances
-        d1 = np.sum((x2[:, :2] - x1_to_2[:, :2]) ** 2, axis=1)
-        d2 = np.sum((x1[:, :2] - x2_to_1[:, :2]) ** 2, axis=1)
-
-        s1, inlier_mask1 = self.rho(d1,T_M=self.T_H)
-        s2, inlier_mask2 = self.rho(d2,T_M=self.T_H)
-        score = s1 + s2
-        S_H = np.sum(score)
-
-        return S_H, inlier_mask1 & inlier_mask2
-    
-    def compute_F_score(self, p1: np.ndarray, p2: np.ndarray, F: np.ndarray):
-
-        # Epipolar lines
-        l2 = (F @ p1.T).T  # (N, 3) lines in image 2
-        l1 = (F.T @ p2.T).T  # (N, 3) lines in image 1
-
-        # Point-line distances squared
-        d1 = np.sum(p2*l2, axis=1)**2 / (l2[:, 0]**2 + l2[:, 1]**2)
-        d2 = np.sum(p1*l1, axis=1)**2 / (l1[:, 0]**2 + l1[:, 1]**2)
-
-        s1, inlier_mask1 = self.rho(d1,T_M=self.T_F)
-        s2, inlier_mask2 = self.rho(d2,T_M=self.T_F)
-        score = s1 + s2
-        S_F = np.sum(score)
-
-        return S_F, inlier_mask1 & inlier_mask2
-
-    def rho(self, d2: np.ndarray, T_M: float):
-        """
-        d2: symmetric transfer error
-        """
-        return np.where(d2 < T_M, self.GAMMA-d2, np.zeros_like(d2)), d2 < T_M
 
     def __homogenize_points(self, p: np.ndarray):
         return np.stack([p[:,0],p[:,1],np.ones_like(p[:,0])], axis=1)
@@ -332,7 +265,7 @@ if __name__ == "__main__":
     # print(img1.shape)
     
 
-    map = MapInitializerCv(
+    map = SimplifiedMapInitializerCv(
         # TODO: might want to find the actualy fx fy values
         K=np.array([
             [3024,  0.0, W/2],
