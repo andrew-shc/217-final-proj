@@ -35,3 +35,6 @@ class MapPoints:  # batched (Nx...)
     d_max: np.ndarray
     d_min: np.ndarray
 
+class CovisibilityGraph:
+    def __init__(self):
+        pass

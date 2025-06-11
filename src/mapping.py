@@ -104,26 +104,3 @@ class LocalMapping:
             pts3[:, i] = P
         
         return pts3
-
-
-class CovisibilityGraph:
-    def __init__(self):
-        self._counter = 0
-
-        self.keyframes: dict[int, Keyframe] = {}
-        self.adj_list: dict[int, list[int]] = {}
-
-    def insert_keyframe(self, kf: Keyframe):
-        self.keyframes[self._counter] = kf
-
-
-        # geometrically find whether the keyframe is visible from any previous keyframes
-        adj_ind = []
-        for k,v in self.keyframes.items():
-            if True:  # TODO: find if kf is mutually visible with v
-                adj_ind.append(k)
-
-        self.adj_list[self._counter] = adj_ind
-
-        self._counter += 1
-
