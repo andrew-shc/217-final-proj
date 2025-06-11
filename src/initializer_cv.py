@@ -26,6 +26,8 @@ class MapInitializerCv:
 
         returns: R,t,M
         """
+        N = kp1.shape[0]
+
         H, H_inlier_mask = cv2.findHomography(kp1, kp2, method=cv2.RANSAC)
         F, F_inlier_mask = cv2.findFundamentalMat(kp1, kp2, method=cv2.FM_8POINT)
         p1, p2 = self.__homogenize_points(kp1), self.__homogenize_points(kp2)
@@ -87,10 +89,84 @@ class MapInitializerCv:
         # given R,t  triangulate the points
 
         # >> insert triangulation code
-        pts_3d = np.array([[0.0,0.0,0.0]])
+        print(R.shape, t.shape)
+        # pts_3d = np.array([[0.0,0.0,0.0]])
+        pts_3d = self.triangulate(p1.T, np.eye(3,3), np.zeros((3,1)), p2.T, R, t)
 
         return (R, t, M, pts_3d)
         
+    def triangulate(self,pts2L,RL,tL,pts2R,RR,tR):
+        """
+        Triangulate the set of points seen at location pts2L / pts2R in the
+        corresponding pair of cameras. Return the 3D coordinates relative
+        to this global coordinate system
+
+
+        Parameters
+        ----------
+        points are homogenous
+
+        pts2L : 2D numpy.array (dtype=float)
+            Coordinates of N points stored in a array of shape (2,N) seen from camL camera
+
+        pts2R : 2D numpy.array (dtype=float)
+            Coordinates of N points stored in a array of shape (2,N) seen from camR camera
+
+        camL : Camera
+            The first "left" camera view
+
+        camR : Camera
+            The second "right" camera view
+
+        Returns
+        -------
+        pts3 : 2D numpy.array (dtype=float)
+            array containing 3D coordinates of the points in global coordinates
+
+        """
+
+        #
+        #  your code goes here
+        #
+        #
+
+        
+        N = pts2L.shape[1]
+        pts3 = np.zeros((3, N))
+        
+        # image (pixel coords) -> image (intrinsic + homogeneous)
+        # qL = (pts2L - camL.c) / camL.f
+        # qR = (pts2R - camR.c) / camR.f
+        # qL = np.concatenate([qL, np.ones((1, qL.shape[1]))], axis=0)
+        # qR = np.concatenate([qR, np.ones((1, qR.shape[1]))], axis=0)
+        
+        inv_K = np.linalg.inv(self.K)
+
+        qL = inv_K @ pts2L
+        qR = inv_K @ pts2R
+
+        for i in range(N):
+            A = np.array([
+                RL @ qL[:, i],
+                -RR @ qR[:, i],
+            ]).T
+            b = tR - tL
+            
+            U, S, Vh = np.linalg.svd(A, full_matrices=False)
+            zL, zR = Vh.T @ np.diag(1/S) @ U.T @ b
+
+            # image (intrinsic + homogeneous) -> camera
+            pL = zL * qL[:, i]
+            pR = zR * qR[:, i]
+            
+            # camera -> world
+            P1 = RL @ pL + tL.squeeze(1)
+            P2 = RR @ pR + tR.squeeze(1)
+            P = (P1+P2)/2
+            
+            pts3[:, i] = P
+        
+        return pts3
 
     def compute_H_score(self, x1: np.ndarray, x2: np.ndarray, H: np.ndarray):
         H_inv = np.linalg.inv(H)
@@ -271,7 +347,7 @@ if __name__ == "__main__":
 
     cv2.imwrite("H_stitched.png", stitched)
 
-
+    pts_3d = pts_3d.T
     x, y, z = pts_3d[:,0], pts_3d[:,1], pts_3d[:,2]
     cam1 = np.zeros(3)
     t /= np.linalg.norm(t)

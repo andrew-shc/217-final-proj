@@ -5,14 +5,12 @@ from util import Keyframe
 
 
 class LocalMapping:
-    def __init__(self):
+    def __init__(self, pts_3d: np.ndarray):
         self.covisibility_graph = CovisibilityGraph()
-
-    def map_initialization(self, kf1: Keyframe, kf2: Keyframe):
-        pass
+        self.pts_3d = pts_3d
 
     def insert_keyframe(self, kf: Keyframe):
-        pass
+        self.covisibility_graph.insert_keyframe(kf)
 
     def _map_points_culling(self):
         """
@@ -110,5 +108,22 @@ class LocalMapping:
 
 class CovisibilityGraph:
     def __init__(self):
-        pass
+        self._counter = 0
+
+        self.keyframes: dict[int, Keyframe] = {}
+        self.adj_list: dict[int, list[int]] = {}
+
+    def insert_keyframe(self, kf: Keyframe):
+        self.keyframes[self._counter] = kf
+
+
+        # geometrically find whether the keyframe is visible from any previous keyframes
+        adj_ind = []
+        for k,v in self.keyframes.items():
+            if True:  # TODO: find if kf is mutually visible with v
+                adj_ind.append(k)
+
+        self.adj_list[self._counter] = adj_ind
+
+        self._counter += 1
 
