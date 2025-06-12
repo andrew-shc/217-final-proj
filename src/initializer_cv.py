@@ -28,11 +28,11 @@ class MapInitializerCv:
         """
         N = kp1.shape[0]
 
-        H, H_inlier_mask = cv2.findHomography(kp1, kp2, method=cv2.RANSAC)
-        F, F_inlier_mask = cv2.findFundamentalMat(kp1, kp2, method=cv2.FM_8POINT)
+        H, _H_inlier_mask = cv2.findHomography(kp1, kp2, method=cv2.RANSAC)
+        F, _F_inlier_mask = cv2.findFundamentalMat(kp1, kp2, method=cv2.FM_8POINT)
         p1, p2 = self.__homogenize_points(kp1), self.__homogenize_points(kp2)
-        S_H = self.compute_H_score(p1, p2, H)
-        S_F = self.compute_F_score(p1, p2, F)
+        S_H, H_inlier_mask = self.compute_H_score(p1, p2, H)
+        S_F, F_inlier_mask = self.compute_F_score(p1, p2, F)
 
         print("S_H:", S_H, "S_F:", S_F)
 
@@ -183,10 +183,12 @@ class MapInitializerCv:
         d1 = np.sum((x2[:, :2] - x1_to_2[:, :2]) ** 2, axis=1)
         d2 = np.sum((x1[:, :2] - x2_to_1[:, :2]) ** 2, axis=1)
 
-        score = self.rho(d1,T_M=self.T_H) + self.rho(d2,T_M=self.T_H)
+        s1, inlier_mask1 = self.rho(d1,T_M=self.T_H)
+        s2, inlier_mask2 = self.rho(d2,T_M=self.T_H)
+        score = s1 + s2
         S_H = np.sum(score)
 
-        return S_H
+        return S_H, inlier_mask1 & inlier_mask2
     
     def compute_F_score(self, p1: np.ndarray, p2: np.ndarray, F: np.ndarray):
 
@@ -198,16 +200,18 @@ class MapInitializerCv:
         d1 = np.sum(p2*l2, axis=1)**2 / (l2[:, 0]**2 + l2[:, 1]**2)
         d2 = np.sum(p1*l1, axis=1)**2 / (l1[:, 0]**2 + l1[:, 1]**2)
 
-        score = self.rho(d1,T_M=self.T_F) + self.rho(d2,T_M=self.T_F)
+        s1, inlier_mask1 = self.rho(d1,T_M=self.T_F)
+        s2, inlier_mask2 = self.rho(d2,T_M=self.T_F)
+        score = s1 + s2
         S_F = np.sum(score)
 
-        return S_F
+        return S_F, inlier_mask1 & inlier_mask2
 
     def rho(self, d2: np.ndarray, T_M: float):
         """
         d2: symmetric transfer error
         """
-        return np.where(d2 < T_M, self.GAMMA-d2, np.zeros_like(d2))
+        return np.where(d2 < T_M, self.GAMMA-d2, np.zeros_like(d2)), d2 < T_M
 
     def __homogenize_points(self, p: np.ndarray):
         return np.stack([p[:,0],p[:,1],np.ones_like(p[:,0])], axis=1)
