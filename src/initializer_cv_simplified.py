@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 
 
 
@@ -31,7 +32,7 @@ class SimplifiedMapInitializerCv:
         # motion hypothesis from H (from pg.8): https://inria.hal.science/inria-00075698/PDF/RR-0856.pdf 
         # pain in an ass to implement it, hence we're skipping it
 
-        # opencv uses a variation that only has at most 4 hypothesis
+        # opencv uses a variation that only has at most 4 hypothesis that can be easily checked by number of points ahead
         _, Rs, ts, _ = cv2.decomposeHomographyMat(H, self.K)
 
         best_idx = -1
@@ -44,23 +45,32 @@ class SimplifiedMapInitializerCv:
             P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
             P2 = self.K @ np.hstack((R, t))
 
-            pts4d_hom = cv2.triangulatePoints(P1, P2, kp1.T, kp2.T)
-            pts4d = pts4d_hom[:3] / pts4d_hom[3]
+            pts3d = self.triangulate_initial_point_cloud(kp1, kp2, R, t).T
+            z1 = pts3d[2]
+            print(R.T.shape, pts3d.shape, t.shape)
+            z2 = (R.T @ (pts3d - t))[2]
+            print(z1.shape, z2.shape)
+            count = np.sum((z1 < 0) & (z2 < 0))
 
-            depth1 = pts4d[2]
-            depth2 = (R[2] @ pts4d + t[2])
+            # pts4d_hom = cv2.triangulatePoints(P1, P2, kp1.T, kp2.T)
+            # pts4d = pts4d_hom[:3] / pts4d_hom[3]
 
-            valid = (depth1 > 0) & (depth2 > 0)
-            count = np.count_nonzero(valid)
+            # depth1 = pts4d[2]
+            # depth2 = (R[2] @ pts4d + t[2])
 
-            # print(1)
+            # valid = (depth1 > 0) & (depth2 > 0)
+            # count = np.count_nonzero(valid)
+
+            print(">>>", count, kp1.shape[0])
             if count > max_valid:
-                # print("===", count, kp1.shape[0])
+                print("===", count, kp1.shape[0])
                 max_valid = count
                 best_idx = i
         
         R = Rs[best_idx]
         t = ts[best_idx]
+
+        print("Best:", R, t)
 
         return R,t,H
 
@@ -77,8 +87,8 @@ class SimplifiedMapInitializerCv:
         pts2R = self.__homogenize_points(kp2)
         RL, tL, RR, tR = np.eye(3,3), np.zeros((3,1)), R, t
 
-        N = pts2L.shape[1]
-        pts3 = np.zeros((3, N))
+        N = pts2L.shape[0]
+        pts3 = np.zeros((N, 3))
         
         # image (pixel coords) -> image (intrinsic + homogeneous)
         # qL = (pts2L - camL.c) / camL.f
@@ -88,8 +98,8 @@ class SimplifiedMapInitializerCv:
         
         inv_K = np.linalg.inv(self.K)
 
-        qL = inv_K @ pts2L
-        qR = inv_K @ pts2R
+        qL = (inv_K @ pts2L.T)
+        qR = (inv_K @ pts2R.T)
 
         for i in range(N):
             A = np.array([
@@ -110,7 +120,7 @@ class SimplifiedMapInitializerCv:
             P2 = RR @ pR + tR.squeeze(1)
             P = (P1+P2)/2
             
-            pts3[:, i] = P
+            pts3[i, :] = P
         
         return pts3
 
@@ -238,6 +248,9 @@ def visualize_point_cloud(pts_3d):
             xaxis_title='X',
             yaxis_title='Y',
             zaxis_title='Z',
+            xaxis=dict(title='X', range=[-1,1]),
+            yaxis=dict(title='Y', range=[-1,1]),
+            zaxis=dict(title='Z', range=[-6,3]),
             aspectmode='data'
         ),
         margin=dict(l=0, r=0, b=0, t=30)
@@ -245,37 +258,175 @@ def visualize_point_cloud(pts_3d):
 
     fig.show()
 
+
+def generate_plane_square(
+    p0,                # (3,) point on the plane (centre of the square)
+    n,                 # (3,) plane normal (any length)
+    side=2.0,          # side length of the square patch
+    n_pts=1_000,       # number of random points to sample
+    seed=None          # RNG seed for repeatability
+):
+    """
+    Return an (n_pts, 3) point cloud lying on a square patch of a plane.
+
+    The plane is (x – p0)·n = 0 and the square is centred at p0.
+    """
+    rng = np.random.default_rng(seed)
+
+    # 1) Build two orthonormal in-plane axes u and v
+    n = n / np.linalg.norm(n)
+    helper = np.array([1, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1, 0])
+    u = np.cross(n, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)                       # already unit
+
+    # 2) Uniformly sample inside the square
+    half = side / 2.0
+    uu = rng.uniform(-half, half, n_pts)
+    vv = rng.uniform(-half, half, n_pts)
+
+    pts = p0 + uu[:, None] * u + vv[:, None] * v  # (N, 3)
+
+    return pts
+
+def project(pts3: np.ndarray, R: np.ndarray, t: np.ndarray, K: np.ndarray):
+    """
+    Project the given 3D points in world coordinates into the specified camera    
+
+    Parameters
+    ----------
+    pts3 : 2D numpy.array (dtype=float)
+        Coordinates of N points stored in a array of shape (3,N)
+
+    Returns
+    -------
+    pts2 : 2D numpy.array (dtype=float)
+        Image coordinates of N points stored in a array of shape (2,N)
+
+    """
+
+    assert(pts3.shape[0]==3)
+
+    # get point location relative to camera
+    pcam = R.T @ (pts3 - t)
+        
+    # project
+    p = K @ pcam
+    pts2 = p[0:2] / p[2,:]
+    
+    assert(pts2.shape[1]==pts3.shape[1])
+    assert(pts2.shape[0]==2)
+
+    return pts2
+
+def roty(theta):
+    st = np.sin(theta)
+    ct = np.cos(theta)
+    R = np.array([[ct,0,st],[0,1,0],[-st,0,ct]])
+    return R
+
 def main():
     ########################################################################################
     ###    Synthetic data generation
     ########################################################################################
     H, W = 1080, 1920
-
-    synth_kp1, synth_kp2 = None, None
-
     K=np.array([
         [3024,  0.0, W/2],
         [ 0.0, 3024, H/2],
         [ 0.0,  0.0, 1.0],
     ])
-    mapper = SimplifiedMapInitializerCv(K=K)
 
+    R=roty(20*np.pi/180)
+    t=np.array([[2.0,-.1,-1.0]]).T
+
+    # gt_pts_3d = generate_hemisphere(1, np.array([[0,0,-5]]).T, 1000)
+    gt_pts_3d = generate_plane_square(np.array([0,0,-5]), np.array([0,0,1])).T
+    synth_kp1 = project(gt_pts_3d, np.eye(3), np.zeros((3,1)), K).T
+    synth_kp2 = project(gt_pts_3d, R, t, K).T
+    viewport_mask = (
+        (0 <= synth_kp1[:,0]) & (synth_kp1[:,0] <= W) & (0 <= synth_kp1[:,1]) & (synth_kp1[:,1] <= H) &
+        (0 <= synth_kp2[:,0]) & (synth_kp2[:,0] <= W) & (0 <= synth_kp2[:,1]) & (synth_kp2[:,1] <= H)
+    )
+    synth_kp1 = synth_kp1[viewport_mask]
+    synth_kp2 = synth_kp2[viewport_mask]
+    synth_pts_3d = (gt_pts_3d.T)[viewport_mask]
+
+
+    fig, axs = plt.subplots(2, 1, figsize=(10, 5))
+    axs[0].scatter(synth_kp1[:,0],synth_kp1[:,1], s=1)
+    axs[1].scatter(synth_kp2[:,0],synth_kp2[:,1], s=1)
+    axs[0].set_xlim(0, W)
+    axs[0].set_ylim(0, H)
+    axs[0].set_aspect('equal', adjustable='box')
+    axs[1].set_xlim(0, W)
+    axs[1].set_ylim(0, H)
+    axs[1].set_aspect('equal', adjustable='box')
+    axs[0].set_title('1st')
+    # axs[0].axis('off')
+    axs[1].set_title('2nd')
+    # axs[1].axis('off')
+    plt.tight_layout()
+    plt.savefig('plot_gt_3d_points.png', dpi=300)
+
+    visualize_point_cloud(gt_pts_3d)
+
+    # triangulation_errs = []
+    # for i in range(100):
+    mapper = SimplifiedMapInitializerCv(K=K)
 
     ########################################################################################
     ###    Finding homography & estimating initial pose
     ########################################################################################
 
-    (R,t,H) = mapper.estimate_initial_pose(synth_kp1, synth_kp2)
+    (R_hat,t_hat,homography) = mapper.estimate_initial_pose(synth_kp1, synth_kp2)
+
+    # R_delta = R_hat @ R.T
+    # cos_theta = (np.trace(R_delta) - 1) / 2.0
+    # cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    # rot_err = np.degrees(np.arccos(cos_theta))
+
+    # s = (t.T @ t_hat) / (t_hat.T @ t_hat)
+    # t_err = np.linalg.norm(s * t_hat - t)
+
+    # print(f"t_err: {t_err} (unit), rot_err: {rot_err} (degrees)")
 
     
     ########################################################################################
     ###    Initial point triangulation
     ########################################################################################
 
-    pts_3d = mapper.triangulate_initial_point_cloud(synth_kp1, synth_kp2, R, t)
+    pts_3d = mapper.triangulate_initial_point_cloud(synth_kp1, synth_kp2, R_hat, t_hat)
+    print(pts_3d.shape, synth_pts_3d.shape)
+    triangulation_err = np.sum(np.sqrt(np.sum((pts_3d-synth_pts_3d)**2,axis=1)))/synth_pts_3d.shape[0]
 
+    print(f"Triangulation error: {triangulation_err}")
+
+    visualize_point_cloud(pts_3d.T)
     
+    reproj_kp1 = project(pts_3d.T, np.eye(3), np.zeros((3,1)), K).T
+    reproj_kp2 = project(pts_3d.T, R, t, K).T
 
+    reproj_err = np.sum(np.sqrt(np.sum((reproj_kp1-synth_kp1)**2, axis=1)))/synth_pts_3d.shape[0]
+
+    print(f"Reprojection error: {reproj_err}")
+
+    fig, axs = plt.subplots(2, 1, figsize=(10, 5))
+    axs[0].scatter(reproj_kp1[:,0],reproj_kp1[:,1], s=1)
+    axs[1].scatter(reproj_kp2[:,0],reproj_kp2[:,1], s=1)
+    axs[0].set_xlim(0, W)
+    axs[0].set_ylim(0, H)
+    axs[0].set_aspect('equal', adjustable='box')
+    axs[1].set_xlim(0, W)
+    axs[1].set_ylim(0, H)
+    axs[1].set_aspect('equal', adjustable='box')
+    axs[0].set_title('1st')
+    # axs[0].axis('off')
+    axs[1].set_title('2nd')
+    # axs[1].axis('off')
+    plt.tight_layout()
+    plt.savefig('plot_reproj_3d_points.png', dpi=300)
+
+    return
 
     ########################################################################################
     ###    Real data
@@ -320,4 +471,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
